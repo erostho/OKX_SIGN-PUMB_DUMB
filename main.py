@@ -316,9 +316,7 @@ def pick_top_movers():
         
         if vol24_usd < MIN_24H_USD_VOL:
             continue
-
-
-        candidates.append((vol24, inst))
+        candidates.append((vol24_usd, inst))
 
     print(
         f"[FILTER] usdt_ok={len(tks)-bad_usdt} "
@@ -327,7 +325,6 @@ def pick_top_movers():
         f"MIN_24H_USD={MIN_24H_USD_VOL}",
         flush=True
     )
-
 
     if not candidates:
         # debug: in thử 5 tickers vol lớn nhất để xem volCcyQuote có đang =0 không

@@ -328,6 +328,7 @@ def fmt_msg(symbol: str, side: str, stars: int, entry: float, exit_safe: float, 
 # 7) PICK TOP MOVERS
 # =========================
 
+
 def pick_top_symbols() -> List[str]:
     inst_type = str(CFG["inst_type"])
     quote_ccy = str(CFG["quote_ccy"])
@@ -342,21 +343,30 @@ def pick_top_symbols() -> List[str]:
         if not inst_id:
             continue
 
-        # Filter quote currency (simple contains)
+        # Filter quote currency
         if quote_ccy not in inst_id:
             continue
 
-        # Use volCcyQuote if present (USDT quote volume)
-        vol_usd = float(t.get("volCcyQuote", "0") or "0")
-        if vol_usd < min_vol:
+        # ===== FIX: Volume fallback for SWAP =====
+        # OKX SWAP tickers thường có volCcy24h (base volume) + last (price)
+        last = float(t.get("last", "0") or "0")
+
+        vol_quote = float(t.get("volCcyQuote", "0") or "0")  # nếu có thì dùng
+        if vol_quote <= 0:
+            vol_base = float(t.get("volCcy24h", "0") or "0")
+            if vol_base <= 0:
+                vol_base = float(t.get("volCcy", "0") or "0")  # fallback cuối
+            vol_quote = vol_base * last  # ước tính quote volume
+
+        if vol_quote < min_vol:
             continue
 
-        # Sort by absolute 24h change (stable)
         chg = float(t.get("chg24h", "0") or "0")
         picked.append((abs(chg), inst_id))
 
     picked.sort(reverse=True, key=lambda x: x[0])
     return [x[1] for x in picked[:top_n]]
+
 
 # =========================
 # 8) MAIN RUN

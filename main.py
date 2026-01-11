@@ -46,11 +46,17 @@ def get(url, params=None):
             last_err = e
             time.sleep(0.5)
     raise last_err
-    
+
 DEBUG = os.getenv("DEBUG", "1") == "1"
 def dlog(*args):
     if DEBUG:
         print("[DEBUG]", *args, flush=True)
+
+# ===== FAIL REASONS (debug why signals are rejected) =====
+FAIL = {}
+def fail(reason: str):
+    FAIL[reason] = FAIL.get(reason, 0) + 1
+    return None
 
 # OKX candles: [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]
 def candles(inst, tf, limit=CANDLES_LIMIT):
@@ -85,7 +91,7 @@ def rsi(vals, n=14):
         rs=avg_g/avg_l if avg_l else 99
         out.append(100-100/(1+rs))
     return out
-    
+
 def atr(highs, lows, closes, n=14):
     if len(closes) < n + 1:
         return None
@@ -145,7 +151,7 @@ def score_signal(inst: str):
     # main candles
     m = candles(inst, MAIN_TF)
     if len(m) < max(60, BREAKOUT_LOOKBACK + 30):
-        return None
+        return fail("main_candles_too_short")
 
     o = [float(x[1]) for x in m]
     h = [float(x[2]) for x in m]
@@ -159,7 +165,7 @@ def score_signal(inst: str):
 
     # ---- Liquidity filter (5m quote vol) ----
     if vq[-1] < MIN_5M_USD_VOL:
-        return None
+        return fail("vol5m_too_low")
 
     # ---- Breakout/Breakdown (N bars) ----
     N = BREAKOUT_LOOKBACK
@@ -169,7 +175,7 @@ def score_signal(inst: str):
     is_pumb = close > highN
     is_dumb = close < lowN
     if not is_pumb and not is_dumb:
-        return None
+        return fail("no_breakout")
 
     side = "PUMB" if is_pumb else "DUMB"
 
@@ -178,11 +184,11 @@ def score_signal(inst: str):
     e20 = ema(c, 20)
     ema20_now = e20[-1]
     if ema20_now is None:
-        return None
+        return fail("ema20_none")
 
     dist_pct = abs(close - ema20_now) / close * 100
     if dist_pct > MAX_EMA_DIST_PCT:
-        return None
+        return fail("overextended_ema20")
 
     # ---- VWAP filter (tránh break giả) ----
     # Use last 40 bars main TF
@@ -190,11 +196,11 @@ def score_signal(inst: str):
     tp = [ (h[-w+i] + l[-w+i] + c[-w+i]) / 3 for i in range(w) ]
     vw = vwap(tp, v[-w:])
     if vw is None:
-        return None
+        return fail("vwap_none")
     if side == "PUMB" and close < vw:
-        return None
+        return fail("below_vwap_pumb")
     if side == "DUMB" and close > vw:
-        return None
+        return fail("above_vwap_dumb")
 
     # ---- Stars base ----
     stars = 1
@@ -252,19 +258,19 @@ def score_signal(inst: str):
                 stars += 1  # extra boost if confirm TF also has vol pop
 
     stars = min(stars, 5)
-    
+
     # ---- exits + SL by ATR (per coin) ----
     atr_rows = m if ATR_TF == MAIN_TF else candles(inst, ATR_TF, limit=200)
     ah = [float(x[2]) for x in atr_rows]
     al = [float(x[3]) for x in atr_rows]
     ac = [float(x[4]) for x in atr_rows]
-    
+
     atr_val = atr(ah, al, ac, ATR_LEN)
     if atr_val is None:
-        return None
-    
+        return fail("atr_none")
+
     sl_dist = atr_val * ATR_MULT
-    
+
     if side == "PUMB":
         sl = close - sl_dist
         exit_safe = close + sl_dist * (EXIT_SAFE_PCT / ATR_MULT)
@@ -273,7 +279,7 @@ def score_signal(inst: str):
         sl = close + sl_dist
         exit_safe = close - sl_dist * (EXIT_SAFE_PCT / ATR_MULT)
         exit_opt  = close - sl_dist * (EXIT_OPT_PCT  / ATR_MULT)
-    
+
     sl_pct   = (sl - close) / close * 100
     safe_pct = (exit_safe - close) / close * 100
     opt_pct  = (exit_opt  - close) / close * 100
@@ -313,7 +319,7 @@ def pick_top_movers():
         vol_base = float(t.get("vol24h", "0") or "0")
         last_px  = float(t.get("last", "0") or "0")
         vol24_usd = vol_base * last_px
-        
+
         if vol24_usd < MIN_24H_USD_VOL:
             continue
         candidates.append((vol24_usd, inst))
@@ -407,28 +413,35 @@ def run():
         try:
             sig = score_signal(inst)
         except Exception:
+            FAIL["score_exception"] = FAIL.get("score_exception", 0) + 1
             continue
 
         if not sig:
             continue
 
         if sig["stars"] < MIN_STARS:
+            FAIL["stars_too_low"] = FAIL.get("stars_too_low", 0) + 1
             continue
 
         if MODE == "PUMB_ONLY" and sig["side"] != "PUMB":
             continue
         if MODE == "DUMB_ONLY" and sig["side"] != "DUMB":
             continue
+
         passed += 1
         if sig["side"] == "PUMB":
             msgs_pumb.append(build_msg(sig))
         else:
             msgs_dumb.append(build_msg(sig))
 
+    # ===== print fail summary (top reasons) =====
+    if FAIL:
+        top = sorted(FAIL.items(), key=lambda x: x[1], reverse=True)[:12]
+        print("[FAIL_TOP]", top, flush=True)
+
     if not msgs_pumb and not msgs_dumb:
         print(f"[DONE] sent=0 elapsed={time.time()-t0:.2f}s", flush=True)
         return
-
 
     header = f"📡 Scan OKX | {now_str} | TF={MAIN_TF} | MIN⭐={MIN_STARS}\n"
     blocks = [header]
@@ -444,15 +457,10 @@ def run():
 
 if __name__ == "__main__":
     t0 = time.time()
-    sent = 0
     try:
-        # nếu trong run() bạn không trả sent, cứ để run() tự print,
-        # còn muốn chắc chắn, bạn có thể tăng sent trong run() và return sent.
         run()
     except Exception as e:
         print("[FATAL]", e, flush=True)
         raise
     finally:
         print(f"[DONE] elapsed={time.time()-t0:.2f}s", flush=True)
-
-

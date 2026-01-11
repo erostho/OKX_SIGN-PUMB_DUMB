@@ -22,8 +22,8 @@ DEFAULT_CONFIG = {
     # Universe
     "inst_type": "SWAP",             # "SWAP" or "SPOT"
     "quote_ccy": "USDT",
-    "top_n": 200,
-    "min_24h_usd_vol": 50000,    # filter low liquidity
+    "top_n": 100,
+    "min_24h_usd_vol": 500000,    # filter low liquidity
 
     # Timeframes (OKX bar: 1m,3m,5m,15m,30m,1H,2H,4H,1D...)
     "tf_main": "5m",
@@ -127,6 +127,15 @@ def mark_sent(symbol: str):
 # =========================
 # 3) OKX CLIENT (public REST)
 # =========================
+def fmt_price(x: float) -> str:
+    # luôn giữ 5 số sau dấu phẩy + có dấu phẩy ngăn cách hàng nghìn
+    return f"{x:,.5f}"
+
+def send_long(text: str):
+    # Telegram giới hạn ~4096 chars
+    max_len = 3900
+    for i in range(0, len(text), max_len):
+        send(text[i:i+max_len])
 
 def okx_get(path: str, params: dict | None = None) -> dict:
     url = CFG["okx_base"] + path
@@ -302,27 +311,38 @@ def send_telegram(text: str):
         timeout=20
     )
     r.raise_for_status()
+def send_telegram_long(text: str, max_len: int = 3900):
+    # Telegram limit ~4096 chars, để 3900 cho an toàn
+    text = text.strip()
+    if not text:
+        return
+    for i in range(0, len(text), max_len):
+        send_telegram(text[i:i + max_len])
 
 def fmt_msg(symbol: str, side: str, stars: int, entry: float, exit_safe: float, exit_opt: float, timeframe_min: int) -> str:
-    safe_pct = (exit_safe / entry - 1) * 100
-    opt_pct  = (exit_opt  / entry - 1) * 100
+    def p(x: float) -> str:
+        return f"{x:,.5f}"   # 5 số sau dấu phẩy
+
+    safe_pct = (exit_safe / entry - 1) * 100 if entry else 0.0
+    opt_pct  = (exit_opt  / entry - 1) * 100 if entry else 0.0
 
     if side == "PUMB":
         return (
             f"🟢 PUMB {stars}⭐ | {symbol}\n"
-            f"Entry: {entry:,.0f}\n"
-            f"✅ Exit an toàn: {exit_safe:,.0f}  ({safe_pct:+.2f}%)\n"
-            f"🎯 Exit tối ưu: {exit_opt:,.0f} ({opt_pct:+.2f}%)\n"
+            f"Entry: {p(entry)}\n"
+            f"✅ Exit an toàn: {p(exit_safe)}  ({safe_pct:+.2f}%)\n"
+            f"🎯 Exit tối ưu: {p(exit_opt)} ({opt_pct:+.2f}%)\n"
             f"⏱ Timeframe: {timeframe_min} phút"
         )
     else:
         return (
             f"🔴 DUMB {stars}⭐ | {symbol}\n"
-            f"Entry: {entry:,.0f}\n"
-            f"✅ Exit an toàn: {exit_safe:,.0f}  ({safe_pct:+.2f}%)\n"
-            f"🎯 Exit tối ưu: {exit_opt:,.0f} ({opt_pct:+.2f}%)\n"
+            f"Entry: {p(entry)}\n"
+            f"✅ Exit an toàn: {p(exit_safe)}  ({safe_pct:+.2f}%)\n"
+            f"🎯 Exit tối ưu: {p(exit_opt)} ({opt_pct:+.2f}%)\n"
             f"⏱ Timeframe: {timeframe_min} phút"
         )
+
 
 # =========================
 # 7) PICK TOP MOVERS
@@ -387,6 +407,7 @@ def run_once():
     print(f"[RUN] scan={len(symbols)} inst_type={CFG['inst_type']} main={tf_main} conf={tf1},{tf2}")
 
     sent = 0
+    msgs = []  # <-- gom tất cả tin vào đây
 
     for inst_id in symbols:
         # cooldown
@@ -414,7 +435,6 @@ def run_once():
         if mode == "DUMB_ONLY" and side != "DUMB":
             continue
 
-        # format symbol display (remove -SWAP suffix to look cleaner)
         symbol_display = inst_id.replace("-SWAP", "")
 
         msg = fmt_msg(
@@ -427,15 +447,24 @@ def run_once():
             timeframe_min=timeframe_min
         )
 
+        # gom message, đánh dấu cooldown ngay để tránh spam lặp trong cùng 1 run
+        msgs.append(msg)
+        mark_sent(inst_id)
+        sent += 1
+        print("[QUEUE]", inst_id, side, stars)
+
+    # gửi 1 tin tổng hợp
+    if msgs:
+        header = f"📡 OKX Signals | main={tf_main} confirm={tf1}/{tf2} | min⭐={min_stars}\n"
+        big_msg = header + "\n\n" + "\n\n".join(msgs)
         try:
-            send_telegram(msg)
-            mark_sent(inst_id)
-            sent += 1
-            print("[SEND]", inst_id, side, stars)
+            send_telegram_long(big_msg)
+            print("[SEND] batch messages =", len(msgs))
         except Exception as e:
-            print("[TG] send error", inst_id, e)
+            print("[TG] batch send error", e)
 
     print(f"[DONE] sent={sent}")
+
 
 if __name__ == "__main__":
     try:

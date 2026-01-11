@@ -22,8 +22,8 @@ DEFAULT_CONFIG = {
     # Universe
     "inst_type": "SWAP",             # "SWAP" or "SPOT"
     "quote_ccy": "USDT",
-    "top_n": 100,
-    "min_24h_usd_vol": 5_000_000,    # filter low liquidity
+    "top_n": 200,
+    "min_24h_usd_vol": 50000,    # filter low liquidity
 
     # Timeframes (OKX bar: 1m,3m,5m,15m,30m,1H,2H,4H,1D...)
     "tf_main": "5m",

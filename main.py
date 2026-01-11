@@ -35,10 +35,18 @@ VOL_SPIKE_MULT    = float(os.getenv("VOL_SPIKE_MULT", "3.0"))
 
 # ===== HTTP =====
 def get(url, params=None):
-    r = requests.get(url, params=params, timeout=20)
-    r.raise_for_status()
-    j = r.json()
-    return j.get("data", [])
+    last_err = None
+    for attempt in (1, 2):  # retry 1 lần
+        try:
+            r = requests.get(url, params=params, timeout=12)
+            r.raise_for_status()
+            j = r.json()
+            return j.get("data", [])
+        except Exception as e:
+            last_err = e
+            time.sleep(0.5)
+    raise last_err
+
 
 # OKX candles: [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]
 def candles(inst, tf, limit=CANDLES_LIMIT):
@@ -329,13 +337,22 @@ def build_msg(sig):
     )
 
 def run():
+    t0 = time.time()
     now_str = time.strftime("%H:%M")
 
+    print(f"[RUN] scan={TOP_N} inst_type=SWAP main={MAIN_TF} conf={CONFIRM_1},{CONFIRM_2}", flush=True)
+
     symbols = pick_top_movers()
+    print(f"[INFO] movers_selected={len(symbols)}", flush=True)
+
     msgs_pumb = []
     msgs_dumb = []
 
+    checked = 0
+    passed = 0
+
     for inst in symbols:
+        checked += 1
         sig = None
         try:
             sig = score_signal(inst)
@@ -352,14 +369,16 @@ def run():
             continue
         if MODE == "DUMB_ONLY" and sig["side"] != "DUMB":
             continue
-
+        passed += 1
         if sig["side"] == "PUMB":
             msgs_pumb.append(build_msg(sig))
         else:
             msgs_dumb.append(build_msg(sig))
 
     if not msgs_pumb and not msgs_dumb:
+        print(f"[DONE] sent=0 elapsed={time.time()-t0:.2f}s", flush=True)
         return
+
 
     header = f"📡 Scan OKX | {now_str} | TF={MAIN_TF} | MIN⭐={MIN_STARS}\n"
     blocks = [header]
@@ -370,7 +389,16 @@ def run():
         blocks.append("🔴 DUMB\n" + "\n\n".join(msgs_dumb))
 
     big_msg = "\n\n".join(blocks)
+    print(f"[FILTER] checked={checked} passed={passed} pumb={len(msgs_pumb)} dumb={len(msgs_dumb)}", flush=True)
     send_long(big_msg)
 
 if __name__ == "__main__":
-    run()
+    t0 = time.time()
+    try:
+        print("==> Running 'python main.py'", flush=True)
+        run()
+        print(f"[DONE] elapsed={time.time()-t0:.2f}s", flush=True)
+    except Exception as e:
+        print(f"[FATAL] {type(e).__name__}: {e}", flush=True)
+        raise
+

@@ -23,7 +23,6 @@ ATR_LEN  = int(os.getenv("ATR_LEN", "14"))
 ATR_MULT = float(os.getenv("ATR_MULT", "1.2"))
 ATR_TF   = os.getenv("ATR_TF", MAIN_TF)  # mặc định dùng main TF
 
-
 MIN_24H_USD_VOL   = float(os.getenv("MIN_24H_USD_VOL", "5000000"))  # 10M default
 MIN_5M_USD_VOL    = float(os.getenv("MIN_5M_USD_VOL", "200000"))     # 200k default
 MAX_EMA_DIST_PCT  = float(os.getenv("MAX_EMA_DIST_PCT", "1.2"))      # filter chase (đu đỉnh/đu đáy)
@@ -32,6 +31,14 @@ CANDLES_LIMIT     = int(os.getenv("CANDLES_LIMIT", "210"))
 BREAKOUT_LOOKBACK = int(os.getenv("BREAKOUT_LOOKBACK", "12"))
 MOVERS_BARS       = int(os.getenv("MOVERS_BARS", "3"))               # 3 bars 5m => 15m movers
 VOL_SPIKE_MULT    = float(os.getenv("VOL_SPIKE_MULT", "3.0"))
+
+#SWITH STRIC/EARLY
+AUTO_PROFILE = os.getenv("AUTO_PROFILE", "1") == "1"
+PROFILE_SWITCH_MEDIAN_VOL5M = float(os.getenv("PROFILE_SWITCH_MEDIAN_VOL5M", "120000"))
+EARLY_MIN_5M_USD_VOL = float(os.getenv("EARLY_MIN_5M_USD_VOL", "50000"))
+EARLY_BREAKOUT_LOOKBACK = int(os.getenv("EARLY_BREAKOUT_LOOKBACK", "8"))
+EARLY_MIN_STARS = int(os.getenv("EARLY_MIN_STARS", "3"))
+EARLY_MAX_EMA_DIST_PCT = float(os.getenv("EARLY_MAX_EMA_DIST_PCT", "2.0"))
 
 # ===== HTTP =====
 def get(url, params=None):
@@ -299,6 +306,39 @@ def score_signal(inst: str):
 
 
 # ===== Pick TOP movers (short-term) =====
+def median_f(xs):
+    ys = sorted(xs)
+    n = len(ys)
+    if n == 0:
+        return 0.0
+    m = n // 2
+    return ys[m] if n % 2 == 1 else (ys[m-1] + ys[m]) / 2.0
+
+def detect_profile(symbols):
+    """
+    Decide STRICT/EARLY by checking median 5m quote volume of latest candle
+    among a small sample of movers.
+    """
+    sample = symbols[:30]
+    vols = []
+    for inst in sample:
+        try:
+            rows = candles(inst, MAIN_TF, limit=3)
+            if not rows:
+                continue
+            vq_last = float(rows[-1][7])  # volCcyQuote
+            vols.append(vq_last)
+        except Exception:
+            continue
+
+    med = median_f(vols)
+    # If median vol is weak => EARLY
+    use_early = med > 0 and med < PROFILE_SWITCH_MEDIAN_VOL5M
+    profile = "EARLY" if use_early else "STRICT"
+    print(f"[PROFILE] chosen={profile} median_vol5m={med:.0f} threshold={PROFILE_SWITCH_MEDIAN_VOL5M:.0f} sample={len(vols)}",
+          flush=True)
+    return profile
+
 def pick_top_movers():
     t0 = time.time()
     tks = get(f"{OKX_BASE}/api/v5/market/tickers", {"instType": "SWAP"})
@@ -380,17 +420,19 @@ def pick_top_movers():
     return out
 
 
-def build_msg(sig):
+def build_msg(sig, profile="STRICT"):
     inst = sig["inst"].replace("-SWAP", "")
     side_text = "🟢 PUMB" if sig["side"] == "PUMB" else "🔴 DUMB"
+    tag = " (Early)" if profile == "EARLY" else ""
     return (
-        f"{side_text} {sig['stars']}⭐ | {inst}\n"
+        f"{side_text} {sig['stars']}⭐ | {inst}{tag}\n"
         f"Entry: {fmt_price(sig['entry'])}\n"
         f"✅ TP an toàn: {fmt_price(sig['exit_safe'])}  ({sig['safe_pct']:+.2f}%)\n"
         f"🎯 TP tối ưu: {fmt_price(sig['exit_opt'])}  ({sig['opt_pct']:+.2f}%)\n"
         f"🔴 SL: {fmt_price(sig['sl'])}  ({sig['sl_pct']:+.2f}%)\n"
         f"⏱ Timeframe: {MAIN_TF}"
     )
+
 
 def run():
     t0 = time.time()
@@ -400,6 +442,36 @@ def run():
 
     symbols = pick_top_movers()
     print(f"[INFO] movers_selected={len(symbols)}", flush=True)
+    # ===== AUTO SWITCH STRICT/EARLY =====
+    active_profile = "STRICT"
+    if AUTO_PROFILE and symbols:
+        active_profile = detect_profile(symbols)
+
+    # Apply profile params (STRICT uses current env; EARLY overrides)
+    active_min_5m_vol = MIN_5M_USD_VOL
+    active_breakout_lb = BREAKOUT_LOOKBACK
+    active_min_stars = MIN_STARS
+    active_max_ema_dist = MAX_EMA_DIST_PCT
+
+    if active_profile == "EARLY":
+        active_min_5m_vol = EARLY_MIN_5M_USD_VOL
+        active_breakout_lb = EARLY_BREAKOUT_LOOKBACK
+        active_min_stars = EARLY_MIN_STARS
+        active_max_ema_dist = EARLY_MAX_EMA_DIST_PCT
+
+    print(f"[PROFILE_CFG] profile={active_profile} "
+          f"MIN_5M_USD_VOL={active_min_5m_vol} "
+          f"BREAKOUT_LOOKBACK={active_breakout_lb} "
+          f"MIN_STARS={active_min_stars} "
+          f"MAX_EMA_DIST_PCT={active_max_ema_dist}",
+          flush=True)
+
+    # overwrite globals used by score_signal() (minimal code changes)
+    global MIN_5M_USD_VOL, BREAKOUT_LOOKBACK, MIN_STARS, MAX_EMA_DIST_PCT
+    MIN_5M_USD_VOL = active_min_5m_vol
+    BREAKOUT_LOOKBACK = active_breakout_lb
+    MIN_STARS = active_min_stars
+    MAX_EMA_DIST_PCT = active_max_ema_dist
 
     msgs_pumb = []
     msgs_dumb = []
@@ -430,9 +502,11 @@ def run():
 
         passed += 1
         if sig["side"] == "PUMB":
-            msgs_pumb.append(build_msg(sig))
+            msgs_pumb.append(build_msg(sig, active_profile))
+
         else:
-            msgs_dumb.append(build_msg(sig))
+            msgs_dumb.append(build_msg(sig, active_profile))
+
 
     # ===== print fail summary (top reasons) =====
     if FAIL:
@@ -443,7 +517,8 @@ def run():
         print(f"[DONE] sent=0 elapsed={time.time()-t0:.2f}s", flush=True)
         return
 
-    header = f"📡 Scan OKX | {now_str} | TF={MAIN_TF} | MIN⭐={MIN_STARS}\n"
+    header = f"📡 Scan OKX | {now_str} | TF={MAIN_TF} | PROFILE={active_profile} | MIN⭐={MIN_STARS}\n"
+
     blocks = [header]
 
     if msgs_pumb:

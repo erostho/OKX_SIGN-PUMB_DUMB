@@ -24,7 +24,7 @@ ATR_MULT = float(os.getenv("ATR_MULT", "1.2"))
 ATR_TF   = os.getenv("ATR_TF", MAIN_TF)  # mặc định dùng main TF
 
 
-MIN_24H_USD_VOL   = float(os.getenv("MIN_24H_USD_VOL", "10000000"))  # 10M default
+MIN_24H_USD_VOL   = float(os.getenv("MIN_24H_USD_VOL", "5000000"))  # 10M default
 MIN_5M_USD_VOL    = float(os.getenv("MIN_5M_USD_VOL", "200000"))     # 200k default
 MAX_EMA_DIST_PCT  = float(os.getenv("MAX_EMA_DIST_PCT", "1.2"))      # filter chase (đu đỉnh/đu đáy)
 
@@ -309,15 +309,25 @@ def pick_top_movers():
             bad_usdt += 1
             continue
 
-        vol24 = float(t.get("volCcyQuote", "0") or "0")
-        if vol24 < MIN_24H_USD_VOL:
-            bad_vol24 += 1
+        # OKX SWAP: volCcyQuote thường = 0 → phải tự tính USD volume
+        vol_base = float(t.get("vol24h", "0") or "0")
+        last_px  = float(t.get("last", "0") or "0")
+        vol24_usd = vol_base * last_px
+        
+        if vol24_usd < MIN_24H_USD_VOL:
             continue
+
 
         candidates.append((vol24, inst))
 
-    print(f"[FILTER] usdt_ok={len(tks)-bad_usdt} vol24_ok={len(candidates)} vol24_cut={bad_vol24} MIN_24H={MIN_24H_USD_VOL}",
-          flush=True)
+    print(
+        f"[FILTER] usdt_ok={len(tks)-bad_usdt} "
+        f"vol24usd_ok={len(candidates)} "
+        f"vol24usd_cut={bad_vol24} "
+        f"MIN_24H_USD={MIN_24H_USD_VOL}",
+        flush=True
+    )
+
 
     if not candidates:
         # debug: in thử 5 tickers vol lớn nhất để xem volCcyQuote có đang =0 không

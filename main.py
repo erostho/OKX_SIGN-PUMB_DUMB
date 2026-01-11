@@ -435,6 +435,7 @@ def build_msg(sig, profile="STRICT"):
 
 
 def run():
+    global MIN_5M_USD_VOL, BREAKOUT_LOOKBACK, MIN_STARS, MAX_EMA_DIST_PCT
     t0 = time.time()
     now_str = time.strftime("%H:%M")
 
@@ -467,7 +468,7 @@ def run():
           flush=True)
 
     # overwrite globals used by score_signal() (minimal code changes)
-    global MIN_5M_USD_VOL, BREAKOUT_LOOKBACK, MIN_STARS, MAX_EMA_DIST_PCT
+
     MIN_5M_USD_VOL = active_min_5m_vol
     BREAKOUT_LOOKBACK = active_breakout_lb
     MIN_STARS = active_min_stars

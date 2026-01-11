@@ -49,6 +49,7 @@ DEFAULT_CONFIG = {
     "rsi_len": 14,
     "rsi_pumb": 55.0,
     "rsi_dumb": 45.0,
+    
 
     # Exits (by % from entry)
     "exit_safe_pct": 1.22,
@@ -76,6 +77,7 @@ CFG = load_config()
 TG_TOKEN = os.getenv("TG_TOKEN", "").strip()
 TG_CHAT_ID = os.getenv("TG_CHAT_ID", "").strip()
 REDIS_URL = os.getenv("REDIS_URL", "").strip()
+ATR_K = float(os.getenv("ATR_K", "1.5"))  # mặc định 1.5 (scalpy)
 
 # =========================
 # 2) STATE STORE (Redis preferred)
@@ -201,6 +203,36 @@ def rsi(values: List[float], length: int = 14) -> List[float]:
         rs = avg_gain / avg_loss if avg_loss != 0 else float("inf")
         out.append(100 - (100 / (1 + rs)))
     return out
+def atr(highs: List[float], lows: List[float], closes: List[float], length: int = 14) -> List[float]:
+    """
+    ATR Wilder (RMA):
+    TR = max(high-low, abs(high-prevClose), abs(low-prevClose))
+    ATR = RMA(TR, length)
+    """
+    n = len(closes)
+    if n < length + 1:
+        return [math.nan] * n
+
+    tr = [math.nan]
+    for i in range(1, n):
+        h = highs[i]
+        l = lows[i]
+        pc = closes[i - 1]
+        tr_val = max(h - l, abs(h - pc), abs(l - pc))
+        tr.append(tr_val)
+
+    # first ATR = SMA of first 'length' TR values (skip nan at tr[0])
+    first = sum(tr[1:length+1]) / length
+    out = [math.nan] * length
+    out.append(first)
+
+    # Wilder smoothing
+    prev = first
+    for i in range(length + 1, n):
+        prev = (prev * (length - 1) + tr[i]) / length
+        out.append(prev)
+
+    return out
 
 # =========================
 # 5) SCORING (PUMB/DUMB + stars)
@@ -286,6 +318,19 @@ def score_symbol(main_rows, c1_rows, c2_rows) -> Dict:
     else:
         exit_safe = close * (1 - safe_pct)
         exit_opt  = close * (1 - opt_pct)
+    # ===== SL theo ATR(tf_main) =====
+    atr_len = 14
+    atr_vals = atr(h, l, c, atr_len)
+    atr_now = atr_vals[-1]
+
+    if not (atr_now and not math.isnan(atr_now)):
+        # fallback nếu ATR chưa đủ dữ liệu
+        atr_now = (max(h[-15:]) - min(l[-15:])) / 15.0
+
+    if side == "PUMB":
+        sl = close - ATR_K * atr_now
+    else:
+        sl = close + ATR_K * atr_now
 
     return {
         "side": side,
@@ -293,9 +338,12 @@ def score_symbol(main_rows, c1_rows, c2_rows) -> Dict:
         "entry": close,
         "exit_safe": exit_safe,
         "exit_opt": exit_opt,
+        "sl": sl,
+        "atr": atr_now,
         "vspike": vspike,
         "body_ratio": body_ratio,
     }
+
 
 # =========================
 # 6) TELEGRAM
@@ -319,12 +367,13 @@ def send_telegram_long(text: str, max_len: int = 3900):
     for i in range(0, len(text), max_len):
         send_telegram(text[i:i + max_len])
 
-def fmt_msg(symbol: str, side: str, stars: int, entry: float, exit_safe: float, exit_opt: float, timeframe_min: int) -> str:
+def fmt_msg(symbol: str, side: str, stars: int, entry: float, exit_safe: float, exit_opt: float, sl: float, timeframe_min: int) -> str:
     def p(x: float) -> str:
         return f"{x:,.5f}"   # 5 số sau dấu phẩy
 
     safe_pct = (exit_safe / entry - 1) * 100 if entry else 0.0
     opt_pct  = (exit_opt  / entry - 1) * 100 if entry else 0.0
+    sl_pct   = (sl / entry - 1) * 100 if entry else 0.0
 
     if side == "PUMB":
         return (
@@ -332,6 +381,7 @@ def fmt_msg(symbol: str, side: str, stars: int, entry: float, exit_safe: float, 
             f"Entry: {p(entry)}\n"
             f"✅ Exit an toàn: {p(exit_safe)}  ({safe_pct:+.2f}%)\n"
             f"🎯 Exit tối ưu: {p(exit_opt)} ({opt_pct:+.2f}%)\n"
+            f"🛑 SL (ATRx{ATR_K:g}): {p(sl)} ({sl_pct:+.2f}%)\n"
             f"⏱ Timeframe: {timeframe_min} phút"
         )
     else:
@@ -340,8 +390,10 @@ def fmt_msg(symbol: str, side: str, stars: int, entry: float, exit_safe: float, 
             f"Entry: {p(entry)}\n"
             f"✅ Exit an toàn: {p(exit_safe)}  ({safe_pct:+.2f}%)\n"
             f"🎯 Exit tối ưu: {p(exit_opt)} ({opt_pct:+.2f}%)\n"
+            f"🛑 SL (ATRx{ATR_K:g}): {p(sl)} ({sl_pct:+.2f}%)\n"
             f"⏱ Timeframe: {timeframe_min} phút"
         )
+
 
 
 # =========================
@@ -444,8 +496,10 @@ def run_once():
             entry=float(res["entry"]),
             exit_safe=float(res["exit_safe"]),
             exit_opt=float(res["exit_opt"]),
+            sl=float(res["sl"]),
             timeframe_min=timeframe_min
         )
+
 
         # gom message, đánh dấu cooldown ngay để tránh spam lặp trong cùng 1 run
         msgs.append(msg)
@@ -455,7 +509,7 @@ def run_once():
 
     # gửi 1 tin tổng hợp
     if msgs:
-        header = f"📡 OKX Signals | main={tf_main} confirm={tf1}/{tf2} | min⭐={min_stars}\n"
+        header = f"📡 OKX Signals PUMB/DUMB | main={tf_main}\n"
         big_msg = header + "\n\n" + "\n\n".join(msgs)
         try:
             send_telegram_long(big_msg)

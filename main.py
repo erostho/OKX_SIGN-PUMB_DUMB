@@ -46,7 +46,11 @@ def get(url, params=None):
             last_err = e
             time.sleep(0.5)
     raise last_err
-
+    
+DEBUG = os.getenv("DEBUG", "1") == "1"
+def dlog(*args):
+    if DEBUG:
+        print("[DEBUG]", *args, flush=True)
 
 # OKX candles: [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]
 def candles(inst, tf, limit=CANDLES_LIMIT):
@@ -290,39 +294,78 @@ def score_signal(inst: str):
 
 # ===== Pick TOP movers (short-term) =====
 def pick_top_movers():
+    t0 = time.time()
     tks = get(f"{OKX_BASE}/api/v5/market/tickers", {"instType": "SWAP"})
+    dlog("tickers=", len(tks))
 
-    # 1) filter by USDT + 24h vol to remove trash
+    # 1) filter USDT + vol24h
     candidates = []
+    bad_usdt = 0
+    bad_vol24 = 0
+
     for t in tks:
         inst = t.get("instId", "")
         if not inst or "USDT" not in inst:
+            bad_usdt += 1
             continue
+
         vol24 = float(t.get("volCcyQuote", "0") or "0")
         if vol24 < MIN_24H_USD_VOL:
+            bad_vol24 += 1
             continue
+
         candidates.append((vol24, inst))
 
-    # 2) take top by 24h vol first (reduce API calls)
-    candidates.sort(reverse=True, key=lambda x: x[0])
-    candidates = candidates[: min(250, len(candidates))]  # cap
+    print(f"[FILTER] usdt_ok={len(tks)-bad_usdt} vol24_ok={len(candidates)} vol24_cut={bad_vol24} MIN_24H={MIN_24H_USD_VOL}",
+          flush=True)
 
-    # 3) compute short-term movers using MAIN_TF candles
+    if not candidates:
+        # debug: in thử 5 tickers vol lớn nhất để xem volCcyQuote có đang =0 không
+        top_vol = sorted(
+            [(float(x.get("volCcyQuote","0") or "0"), x.get("instId","")) for x in tks if x.get("instId")],
+            reverse=True
+        )[:5]
+        print("[HINT] candidates=0. Top volCcyQuote samples:", top_vol, flush=True)
+        return []
+
+    # 2) cap candidates (giảm số lần gọi candles)
+    candidates.sort(reverse=True, key=lambda x: x[0])
+    cap = min(250, len(candidates))
+    candidates = candidates[:cap]
+    dlog("candidates_capped=", len(candidates))
+
+    # 3) short-term movers
     movers = []
+    fail_candles = 0
+    too_short = 0
+
     for _, inst in candidates:
         try:
             rows = candles(inst, MAIN_TF, limit=60)
             if len(rows) < (MOVERS_BARS + 2):
+                too_short += 1
                 continue
             closes = [float(x[4]) for x in rows]
-            # change over MOVERS_BARS (e.g. 3 bars mainTF)
             chg = abs(closes[-1] / closes[-(MOVERS_BARS+1)] - 1.0)
             movers.append((chg, inst))
-        except Exception:
+        except Exception as e:
+            fail_candles += 1
+            dlog("candles_fail", inst, MAIN_TF, str(e))
             continue
 
+    print(f"[MOVERS] cap={cap} movers_ok={len(movers)} candles_fail={fail_candles} too_short={too_short} TF={MAIN_TF} bars={MOVERS_BARS}",
+          flush=True)
+
     movers.sort(reverse=True, key=lambda x: x[0])
-    return [x[1] for x in movers[:TOP_N]]
+    out = [x[1] for x in movers[:TOP_N]]
+    print(f"[INFO] movers selected={len(out)} elapsed={time.time()-t0:.2f}s", flush=True)
+
+    # debug: in thử 5 movers đầu để xem có hợp lý
+    if out:
+        dlog("top5_movers=", movers[:5])
+
+    return out
+
 
 def build_msg(sig):
     inst = sig["inst"].replace("-SWAP", "")
@@ -394,11 +437,15 @@ def run():
 
 if __name__ == "__main__":
     t0 = time.time()
+    sent = 0
     try:
-        print("==> Running 'python main.py'", flush=True)
+        # nếu trong run() bạn không trả sent, cứ để run() tự print,
+        # còn muốn chắc chắn, bạn có thể tăng sent trong run() và return sent.
         run()
-        print(f"[DONE] elapsed={time.time()-t0:.2f}s", flush=True)
     except Exception as e:
-        print(f"[FATAL] {type(e).__name__}: {e}", flush=True)
+        print("[FATAL]", e, flush=True)
         raise
+    finally:
+        print(f"[DONE] elapsed={time.time()-t0:.2f}s", flush=True)
+
 

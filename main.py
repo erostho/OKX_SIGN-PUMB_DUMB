@@ -35,9 +35,8 @@ VOL_SPIKE_MULT    = float(os.getenv("VOL_SPIKE_MULT", "3.0"))
 #SWITH STRIC/EARLY
 AUTO_PROFILE = os.getenv("AUTO_PROFILE", "1") == "1"
 PROFILE_SWITCH_MEDIAN_VOL5M = float(os.getenv("PROFILE_SWITCH_MEDIAN_VOL5M", "120000"))
-EARLY_MIN_5M_USD_VOL = float(os.getenv("EARLY_MIN_5M_USD_VOL", "50000"))
+EARLY_MIN_5M_USD_VOL = float(os.getenv("EARLY_MIN_5M_USD_VOL", "80000"))
 EARLY_BREAKOUT_LOOKBACK = int(os.getenv("EARLY_BREAKOUT_LOOKBACK", "8"))
-EARLY_MIN_STARS = int(os.getenv("EARLY_MIN_STARS", "3"))
 EARLY_MAX_EMA_DIST_PCT = float(os.getenv("EARLY_MAX_EMA_DIST_PCT", "2.0"))
 
 # ===== HTTP =====
@@ -438,9 +437,7 @@ def run():
     global MIN_5M_USD_VOL, BREAKOUT_LOOKBACK, MIN_STARS, MAX_EMA_DIST_PCT
     t0 = time.time()
     now_str = time.strftime("%H:%M")
-
     print(f"[RUN] scan={TOP_N} inst_type=SWAP main={MAIN_TF} conf={CONFIRM_1},{CONFIRM_2}", flush=True)
-
     symbols = pick_top_movers()
     print(f"[INFO] movers_selected={len(symbols)}", flush=True)
     # ===== AUTO SWITCH STRICT/EARLY =====
@@ -457,7 +454,7 @@ def run():
     if active_profile == "EARLY":
         active_min_5m_vol = EARLY_MIN_5M_USD_VOL
         active_breakout_lb = EARLY_BREAKOUT_LOOKBACK
-        active_min_stars = EARLY_MIN_STARS
+        active_min_stars = MIN_STARS
         active_max_ema_dist = EARLY_MAX_EMA_DIST_PCT
 
     print(f"[PROFILE_CFG] profile={active_profile} "

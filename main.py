@@ -23,12 +23,12 @@ ATR_LEN  = int(os.getenv("ATR_LEN", "14"))
 ATR_MULT = float(os.getenv("ATR_MULT", "1.2"))
 ATR_TF   = os.getenv("ATR_TF", MAIN_TF)  # mặc định dùng main TF
 
-MIN_24H_USD_VOL   = float(os.getenv("MIN_24H_USD_VOL", "5000000"))  # 10M default
+MIN_24H_USD_VOL   = float(os.getenv("MIN_24H_USD_VOL", "10000000"))  # 10M default
 MIN_5M_USD_VOL    = float(os.getenv("MIN_5M_USD_VOL", "200000"))     # 200k default
-MAX_EMA_DIST_PCT  = float(os.getenv("MAX_EMA_DIST_PCT", "1.2"))      # filter chase (đu đỉnh/đu đáy)
+MAX_EMA_DIST_PCT  = float(os.getenv("MAX_EMA_DIST_PCT", "1.5"))      # filter chase (đu đỉnh/đu đáy)
 
 CANDLES_LIMIT     = int(os.getenv("CANDLES_LIMIT", "210"))
-BREAKOUT_LOOKBACK = int(os.getenv("BREAKOUT_LOOKBACK", "12"))
+BREAKOUT_LOOKBACK = int(os.getenv("BREAKOUT_LOOKBACK", "10"))
 MOVERS_BARS       = int(os.getenv("MOVERS_BARS", "3"))               # 3 bars 5m => 15m movers
 VOL_SPIKE_MULT    = float(os.getenv("VOL_SPIKE_MULT", "3.0"))
 

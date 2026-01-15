@@ -313,30 +313,46 @@ def median_f(xs):
     m = n // 2
     return ys[m] if n % 2 == 1 else (ys[m-1] + ys[m]) / 2.0
 
+STRICT_SWITCH_SAMPLE = int(os.getenv("STRICT_SWITCH_SAMPLE", "30"))
+STRICT_SWITCH_MIN_HITS = int(os.getenv("STRICT_SWITCH_MIN_HITS", "8"))
+FORCE_PROFILE = os.getenv("FORCE_PROFILE", "").upper().strip()
+
 def detect_profile(symbols):
     """
-    Decide STRICT/EARLY by checking median 5m quote volume of latest candle
-    among a small sample of movers.
+    Decide STRICT/EARLY by counting how many movers meet STRICT liquidity threshold (MIN_5M_USD_VOL).
+    This aligns regime switching with STRICT per-coin filter.
     """
-    sample = symbols[:30]
+    if FORCE_PROFILE in ("STRICT", "EARLY"):
+        print(f"[PROFILE] forced={FORCE_PROFILE}", flush=True)
+        return FORCE_PROFILE
+
+    sample = symbols[:STRICT_SWITCH_SAMPLE]
     vols = []
+    hits = 0
+
     for inst in sample:
         try:
             rows = candles(inst, MAIN_TF, limit=3)
             if not rows:
                 continue
-            vq_last = float(rows[-1][7])  # volCcyQuote
+            vq_last = float(rows[-1][7])  # volCcyQuote (USDT)
             vols.append(vq_last)
+            if vq_last >= MIN_5M_USD_VOL:  # STRICT threshold (vd 200k)
+                hits += 1
         except Exception:
             continue
 
-    med = median_f(vols)
-    # If median vol is weak => EARLY
-    use_early = med > 0 and med < PROFILE_SWITCH_MEDIAN_VOL5M
-    profile = "EARLY" if use_early else "STRICT"
-    print(f"[PROFILE] chosen={profile} median_vol5m={med:.0f} threshold={PROFILE_SWITCH_MEDIAN_VOL5M:.0f} sample={len(vols)}",
-          flush=True)
+    med = median_f(vols) if vols else 0.0
+    profile = "STRICT" if hits >= STRICT_SWITCH_MIN_HITS else "EARLY"
+
+    print(
+        f"[PROFILE] chosen={profile} hits_strict={hits}/{len(vols)} "
+        f"strict_vol={MIN_5M_USD_VOL:.0f} median_vol5m={med:.0f} "
+        f"min_hits={STRICT_SWITCH_MIN_HITS} sample={STRICT_SWITCH_SAMPLE}",
+        flush=True
+    )
     return profile
+
 
 def pick_top_movers():
     t0 = time.time()
